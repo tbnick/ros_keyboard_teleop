@@ -23,7 +23,7 @@ setup(
         ],
     },
     entry_points={
-        'console_scripts': ['teleop_exec = pythoncode.arm_teleop_node:main',
+        'console_scripts': ['teleop_exec = pythoncode.arm_velo2_teleop_node:main',
         ],
     },
 )

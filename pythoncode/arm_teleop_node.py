@@ -1,12 +1,11 @@
+import time
 import rclpy 
 import numpy as np
 from rclpy.node import Node
-from rclpy.action import ActionClient
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from sensor_msgs.msg import JointState
-from control_msgs.action import FollowJointTrajectory
-from trajectory_msgs.msg import JointTrajectoryPoint
+from std_msgs.msg import Float64MultiArray
 
 
 import sys
@@ -23,7 +22,7 @@ class ArmTeleopNode(Node):
         self.target_joints = ['Shoulder_Rotation', 'Shoulder_Pitch', 'Elbow', 'Wrist_Pitch', 'Wrist_Roll']
 
         self.current_positions = [0.0] * 5
-        self.position_step     =  0.25
+        self.position_step     =  0.01
 
         self.joint_limits = {
             'Shoulder_Rotation': [-1.57, 1.57],
@@ -38,11 +37,11 @@ class ArmTeleopNode(Node):
         self.net_group = MutuallyExclusiveCallbackGroup()
         self.timer_group = MutuallyExclusiveCallbackGroup()
         
-        self._action_client = ActionClient(
-            node=self, 
-            action_type=FollowJointTrajectory,
-            action_name='/arm_controller/follow_joint_trajectory'
-        )              #* instanziierung des action-clients
+        self.pos_pub = self.create_publisher(
+            msg_type=Float64MultiArray,
+            topic='/joint_servo_controller_position/commands',
+            qos_profile=10
+        )  # wir instanziieren nun den publisher, wenn wir einfach über topics kommunizieren wird die latenz radikal verkürzt
         
 
         self.joint_state_sub = self.create_subscription(
@@ -80,25 +79,31 @@ class ArmTeleopNode(Node):
         if key != '':
             self.process_key_input(key=key)
 
+
+
     def send_position_command(self):
-        if not self._action_client.wait_for_server(timeout_sec=0.001):
-            return 
-        
-        goal_msg = FollowJointTrajectory.Goal()
-        goal_msg.trajectory.joint_names = self.target_joints
+        """#if not self._action_client.wait_for_server(timeout_sec=0.001):
+        #    return 
+        #
+        #goal_msg = FollowJointTrajectory.Goal()
+        #goal_msg.trajectory.joint_names = self.target_joints
+#
+        #point = JointTrajectoryPoint()
+        #point.positions = self.current_positions
+#
+        #point.time_from_start.sec     = 0
+        #point.time_from_start.nanosec = int(0.15 * 1e9)
+        #
+#
+        #goal_msg.trajectory.points.append(point)
+#
+        ## if self._send_goal_future is not None and not self._send_goal_future.done():
+        ##    return
+        #self._send_goal_future = self._action_client.send_goal_async(goal_msg)"""
+        msg = Float64MultiArray()
+        msg.data = self.current_positions
+        self.pos_pub.publish(msg)
 
-        point = JointTrajectoryPoint()
-        point.positions = self.current_positions
-
-        point.time_from_start.sec     = 0
-        point.time_from_start.nanosec = int(0.15 * 1e9)
-        
-
-        goal_msg.trajectory.points.append(point)
-
-        # if self._send_goal_future is not None and not self._send_goal_future.done():
-        #    return
-        self._send_goal_future = self._action_client.send_goal_async(goal_msg)
 
     def get_key(self):
         tty.setraw(sys.stdin.fileno())
