@@ -149,6 +149,22 @@ class VRInterface():
         yaw, pitch, roll = rotation.as_euler('yxz', degrees=True)
         return roll, pitch, yaw
 
+    def get_lighthouse_poses(self):
+        """Sucht nach allen aktiven Lighthouses und gibt deren 4x4-Matrizen zurück."""
+        if not self.poses:
+            return {}
+        
+        lighthouse_data = {}
+        for i in range(ov.k_unMaxTrackedDeviceCount):
+            device_class = self.vr.getTrackedDeviceClass(i)
+            # Prüfen, ob das Gerät eine Tracking-Referenz (Lighthouse) ist
+            if device_class == ov.TrackedDeviceClass_TrackingReference:
+                pose = self.poses[i]
+                if pose.bPoseIsValid:
+                    m = pose.mDeviceToAbsoluteTracking
+                    mat4x4 = self._pad_position_matrix(matrix=m)
+                    lighthouse_data[f"lighthouse_{i}"] = mat4x4
+        return lighthouse_data
 
 if __name__ == "__main__":
     pass
