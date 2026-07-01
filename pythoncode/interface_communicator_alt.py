@@ -2,14 +2,15 @@
 import rclpy 
 import numpy as np
 import openvr as ov
+from typing import List
 
-from vr_interface import VRInterface
+from vr_interface_alt import VRInterface
+from vr_calibration_alt import VRCalibrator
 
 #standart zur übertragung mittels ros
 from rclpy.node import Node
 from geometry_msgs.msg import TwistStamped               #brauche ich für die übertragung der velocities
 from scipy.spatial.transform import Rotation as R        # eig nur notwendig für die matrixtrafo <- depr?!
-
 
 # für visualisierung mittels rviz -> tf
 import tf2_ros
@@ -17,14 +18,15 @@ from geometry_msgs.msg import TransformStamped
 
 
 
-class VRInterfaceNode(Node):
+class InterfaceCommunicator(Node):
     """interface class to access SteamVR's hardware-data and publish it to ros"""
     def __init__(self):
         """Initialisiert die Verbindung zur SteamVR-Runtime"""
         
-        super().__init__('vr_interface_node')
+        super().__init__('InterfaceCommunicator')
 
-        self.interface = VRInterface()
+        self.interface  = VRInterface()
+        self.calibrator = VRCalibrator()
 
 
         self.static_broadcaster  = tf2_ros.StaticTransformBroadcaster(self)
@@ -32,24 +34,59 @@ class VRInterfaceNode(Node):
 
         self.publish_steamvr_scene_origin()
 
+        self.T_scene_table = self.execute_calibration()
+
+        self.publish_calibrated_table(self.T_scene_table)
+
 
         self.timer = self.create_timer(
             timer_period_sec= 1.0 / 90.0,
             callback=self.node_loop)
 
-        print("Initialisiere Publisher")
+        self.get_logger().info("Initialisiere Publisher")
         self.velo_pub = self.create_publisher(
             msg_type=TwistStamped,
             topic='/servo_node/delta_twist_cmd',
             qos_profile=10                                          # rpr depth of msg_history_queue
         )
+    
+    def execute_calibration(self)->np.ndarray:
+        points:List = []
+        prompts = [
+                "Platziere den Controller auf dem gewünschten TISCH-URSPRUNG (P0) und drücke ENTER...",
+                "Platziere den Controller auf der RECHTEN TISCHKANTE (P1, Richtung X-Achse) und drücke ENTER...",
+                "Platziere den Controller auf der HINTEREN TISCHKANTE (P2, Richtung Y-Achse) und drücke ENTER..."
+            ]
+        
+        for prompt in prompts:
+            self.get_logger().info(prompt)
+            while rclpy.ok():
 
+                self.interface.update()
+                tracking  = self.interface.get_full_position()
+
+                if (tracking is not None and self.interface.is_grip_pressed()):
+                    _, mat4x4 = tracking
+                    t_ros, _  = self.coordinate_transform(mat4x4)
+                    points.append(t_ros)
+                    self.get_logger().info(f"-> Punkt {t_ros} erfolgreich gespeichert.")
+                    while self.interface.is_grip_pressed() and rclpy.ok():
+                        self.interface.update()
+                        self.get_logger().info(f'warte auf bestätigung - trackpad_touched {self.interface.is_trackpad_touched()}')
+                    break
+                if tracking is None:
+                    self.get_logger().warn('Tracking abgerissen!', throttle_duration_sec=2.0)
+                        # self.shutdown()
+                
+        return self.calibrator._compute_calibration_matrix(points[0], points[1], points[2])
+    
     def node_loop(self):
         """ROS2 loop - gestartet durch timer.callback"""
         self.interface.update()                                                           # aufruf entspricht exakt der ausgabefrequenz des controllers
         tracking_result = self.interface.get_full_position()
+        
         if tracking_result is not None:
-            fullpos, mat4x4 = tracking_result
+            _, mat4x4 = tracking_result
             self.transform_mat_to_msg(mat4x4=mat4x4, child_frame='vr_controller')
         else:
             self.get_logger().warn('Tracking abgerissen - Controller nicht im Sichtfeld!', throttle_duration_sec=2.0)
@@ -57,7 +94,6 @@ class VRInterfaceNode(Node):
         lighthouses = self.interface.get_lighthouse_poses()
         for lh_name, lh_matrix in lighthouses.items():
             self.transform_mat_to_msg(lh_matrix, child_frame=lh_name)
-
 
     def transform_mat_to_msg(self, mat4x4:np.ndarray, child_frame:str)->TransformStamped:
         t = TransformStamped()
@@ -84,6 +120,30 @@ class VRInterfaceNode(Node):
             
         # Jetzt die Nachricht formgerecht senden
         self.dynamic_broadcaster.sendTransform(t)
+    
+    def publish_calibrated_table(self, T_matrix: np.ndarray):
+        """Verankert das berechnete Tischkoordinatensystem permanent im ROS 2 TF-Baum."""
+        t = TransformStamped()
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = 'steamvr_scene_origin'     # Das geometrische Elternelement
+        t.child_frame_id = 'calibrated_table_origin'   # Der neue Ziel-Frame für RViz
+        
+        # Translation (Spalte 3) aus der Matrix extrahieren
+        t.transform.translation.x = float(T_matrix[0, 3])
+        t.transform.translation.y = float(T_matrix[1, 3])
+        t.transform.translation.z = float(T_matrix[2, 3])
+        
+        # Rotation (obere 3x3 Untermatrix) extrahieren und in Quaternion konvertieren
+        rotation = R.from_matrix(T_matrix[:3, :3])
+        q = rotation.as_quat() # [x, y, z, w]
+        
+        t.transform.rotation.x = float(q[0])
+        t.transform.rotation.y = float(q[1])
+        t.transform.rotation.z = float(q[2])
+        t.transform.rotation.w = float(q[3])
+        
+        # Über den StaticBroadcaster senden (wird dauerhaft im System gehalten)
+        self.static_broadcaster.sendTransform(t)
 
     def coordinate_transform(self, measurement_mat:np.ndarray):
         # Konstante Basiswechselmatrix (OpenVR Y-Up -> ROS Z-Up)
@@ -108,9 +168,8 @@ class VRInterfaceNode(Node):
         t.header.stamp = self.get_clock().now().to_msg()
         t.header.frame_id = 'base_link'
         t.child_frame_id = 'steamvr_scene_origin'
-        
-        # Keine Fake-Daten: Identitätsmatrix, da die Hardware-Koordinaten 
-        # die absolute Realität abbilden, in die sich RViz hineinrechnet.
+
+
         t.transform.translation.x = 0.0
         t.transform.translation.y = 0.0
         t.transform.translation.z = 0.0
@@ -128,7 +187,7 @@ class VRInterfaceNode(Node):
 def main():
     rclpy.init()
     try:   
-        node = VRInterfaceNode()
+        node = InterfaceCommunicator()
         rclpy.spin(node)
     except KeyboardInterrupt:
         print("\n [INFO] Testlauf durch Nutzer abgebrochen")

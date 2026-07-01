@@ -46,6 +46,9 @@ class VRInterface():
                     print(f"[VRInterface] Controller mit Index {i} gefunden.")
                     break
 
+    def confirm_calibration(self, is_trackpad_touched:bool)->bool:                  #!depr
+        return (is_trackpad_touched)
+
     def shutdown(self):
         """Trennt die Verbindung sicher"""
         print("[VRInterface] Beende Verbindung")
